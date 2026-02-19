@@ -1,11 +1,29 @@
+// DID SDK v2 — TypeScript client for DID Registry contract
 
-// DID Client SDK
-// A TypeScript wrapper to interact with the DID Registry contract
+import { StacksMainnet, StacksTestnet } from '@stacks/network';
+import {
+    makeContractCall,
+    broadcastTransaction,
+    callReadOnlyFunction,
+    standardPrincipalCV,
+    stringUtf8CV,
+    stringAsciiCV,
+    AnchorMode,
+    PostConditionMode,
+    cvToJSON
+} from '@stacks/transactions';
 
 export interface DIDDocument {
-    id: string; // did:stacks:SP123...
-    publicKey: string[];
-    service: ServiceEndpoint[];
+    id: string;         // did:stacks:SP123...
+    publicKeys: DIDKey[];
+    services: ServiceEndpoint[];
+    credentialAnchors: string[];
+}
+
+export interface DIDKey {
+    id: string;
+    type: 'EcdsaSecp256k1' | 'Ed25519';
+    publicKeyHex: string;
 }
 
 export interface ServiceEndpoint {
@@ -14,34 +32,117 @@ export interface ServiceEndpoint {
     endpoint: string;
 }
 
-export class DIDRegistrar {
+export interface DIDConfig {
     contractAddress: string;
+    contractName: string;
+    network: 'mainnet' | 'testnet';
+}
 
-    constructor(contractAddress: string) {
-        this.contractAddress = contractAddress;
+export class DIDRegistrarSDK {
+    private config: DIDConfig;
+    private network: StacksMainnet | StacksTestnet;
+
+    constructor(config: DIDConfig) {
+        this.config = config;
+        this.network = config.network === 'mainnet' ? new StacksMainnet() : new StacksTestnet();
     }
 
-    /**
-     * Resolves a DID to its on-chain document hash
-     * @param principal The Stacks address to resolve
-     */
-    async resolve(principal: string): Promise<string | null> {
-        console.log(`Resolving DID for ${principal}...`);
-        // Mock chain call
-        return "QmHash123...";
+    /** Register a new DID on-chain with IPFS document hash. */
+    async registerDID(ipfsHash: string, senderKey: string): Promise<string> {
+        const tx = await makeContractCall({
+            contractAddress: this.config.contractAddress,
+            contractName: this.config.contractName,
+            functionName: 'register-did',
+            functionArgs: [stringUtf8CV(ipfsHash)],
+            senderKey,
+            network: this.network,
+            anchorMode: AnchorMode.Any,
+            postConditionMode: PostConditionMode.Allow,
+        });
+        const result = await broadcastTransaction(tx, this.network);
+        return result.txid;
     }
 
-    /**
-     * Updates the off-chain DID document and publishes the hash
-     */
-    async updateDocument(doc: DIDDocument): Promise<string> {
-        const hash = this.hashDocument(doc);
-        console.log(`Updating DID. New Hash: ${hash}`);
-        return hash;
+    /** Update DID document hash (controller only). */
+    async updateDID(newHash: string, senderKey: string): Promise<string> {
+        const tx = await makeContractCall({
+            contractAddress: this.config.contractAddress,
+            contractName: this.config.contractName,
+            functionName: 'update-did',
+            functionArgs: [stringUtf8CV(newHash)],
+            senderKey,
+            network: this.network,
+            anchorMode: AnchorMode.Any,
+            postConditionMode: PostConditionMode.Allow,
+        });
+        const result = await broadcastTransaction(tx, this.network);
+        return result.txid;
     }
 
-    private hashDocument(doc: DIDDocument): string {
-        // Mock IPFS hashing logic
-        return "QmNewHash456...";
+    /** Add a verification key to a DID document. */
+    async addVerificationKey(keyId: string, pubKeyHex: string, keyType: string, senderKey: string): Promise<string> {
+        const tx = await makeContractCall({
+            contractAddress: this.config.contractAddress,
+            contractName: this.config.contractName,
+            functionName: 'add-verification-key',
+            functionArgs: [
+                stringAsciiCV(keyId),
+                stringAsciiCV(pubKeyHex),
+                stringAsciiCV(keyType)
+            ],
+            senderKey,
+            network: this.network,
+            anchorMode: AnchorMode.Any,
+            postConditionMode: PostConditionMode.Allow,
+        });
+        const result = await broadcastTransaction(tx, this.network);
+        return result.txid;
+    }
+
+    /** Anchor a verifiable credential hash on-chain. */
+    async anchorCredential(credHash: string, subject: string, credType: string, senderKey: string): Promise<string> {
+        const tx = await makeContractCall({
+            contractAddress: this.config.contractAddress,
+            contractName: this.config.contractName,
+            functionName: 'anchor-credential',
+            functionArgs: [
+                stringUtf8CV(credHash),
+                standardPrincipalCV(subject),
+                stringAsciiCV(credType)
+            ],
+            senderKey,
+            network: this.network,
+            anchorMode: AnchorMode.Any,
+            postConditionMode: PostConditionMode.Allow,
+        });
+        const result = await broadcastTransaction(tx, this.network);
+        return result.txid;
+    }
+
+    /** Resolve a DID to its on-chain document hash. */
+    async resolveDID(principal: string): Promise<any> {
+        const result = await callReadOnlyFunction({
+            contractAddress: this.config.contractAddress,
+            contractName: this.config.contractName,
+            functionName: 'resolve-did',
+            functionArgs: [standardPrincipalCV(principal)],
+            network: this.network,
+            senderAddress: principal,
+        });
+        return cvToJSON(result);
+    }
+
+    /** Verify whether a credential is active (not revoked). */
+    async verifyCredential(credHash: string): Promise<boolean> {
+        const result = await callReadOnlyFunction({
+            contractAddress: this.config.contractAddress,
+            contractName: this.config.contractName,
+            functionName: 'verify-credential',
+            functionArgs: [stringUtf8CV(credHash)],
+            network: this.network,
+            senderAddress: this.config.contractAddress,
+        });
+        const json = cvToJSON(result);
+        return json.value.value === true;
     }
 }
